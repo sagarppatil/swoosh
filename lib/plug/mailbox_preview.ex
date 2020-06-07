@@ -21,21 +21,30 @@ if Code.ensure_loaded?(Plug) do
 
     use Plug.Router
     use Plug.ErrorHandler
+    import Plug.Swoosh.AcceptContentType, only: [accepts: 2, get_format: 1]
 
     alias Swoosh.Email.Render
     alias Swoosh.Adapters.Local.Storage.Memory
 
     require EEx
-    EEx.function_from_file :defp, :template, "lib/plug/templates/mailbox_viewer/index.html.eex", [:assigns]
+
+    EEx.function_from_file(
+      :defp,
+      :template,
+      "lib/plug/templates/mailbox_viewer/index.html.eex",
+      [:assigns]
+    )
 
     def call(conn, opts) do
       conn =
         conn
         |> assign(:base_path, opts[:base_path] || "/")
         |> assign(:storage_driver, opts[:storage_driver] || Memory)
+
       super(conn, opts)
     end
 
+    plug :accepts, ["html", "json"]
     plug :match
     plug :dispatch
 
@@ -48,21 +57,24 @@ if Code.ensure_loaded?(Plug) do
     end
 
     get "/" do
+      IO.inspect(get_req_header(conn, "accept"))
+      IO.inspect(get_format(conn))
       emails = conn.assigns.storage_driver.all()
+
       conn
-      |> put_resp_content_type("text/html")
-      |> send_resp(200, template(emails: emails, email: nil, conn: conn))
+      |> render(emails: emails, email: nil, conn: conn)
     end
 
     get "/:id/html" do
       email = conn.assigns.storage_driver.get(id)
+
       conn
-      |> put_resp_content_type("text/html")
-      |> send_resp(200, email.html_body)
+      |> render(html: email.html_body)
     end
 
     get "/:id/attachments/:index" do
       index = String.to_integer(index)
+
       id
       |> conn.assigns.storage_driver.get()
       |> case do
@@ -74,15 +86,18 @@ if Code.ensure_loaded?(Plug) do
               conn
               |> put_resp_content_type(content_type)
               |> send_resp(200, data)
+
             %{path: path, content_type: content_type} when not is_nil(path) ->
               conn
               |> put_resp_content_type(content_type)
               |> send_resp(200, File.read!(path))
+
             _ ->
               conn
               |> put_resp_content_type("text/html")
               |> send_resp(500, "Attachment cannot be displayed")
           end
+
         _ ->
           conn
           |> put_resp_content_type("text/html")
@@ -93,9 +108,34 @@ if Code.ensure_loaded?(Plug) do
     get "/:id" do
       emails = conn.assigns.storage_driver.all()
       email = conn.assigns.storage_driver.get(id)
+
       conn
-      |> put_resp_content_type("text/html")
-      |> send_resp(200, template(emails: emails, email: email, conn: conn))
+      |> render(emails: emails, email: email, conn: conn)
+    end
+
+    def render(conn, assigns) do
+      case get_format(conn) do
+        "html" ->
+          if "html" in assigns do
+            conn
+            |> put_resp_content_type("text/html")
+            |> send_resp(200, assigns[:html])
+          else
+            conn
+            |> put_resp_content_type("text/html")
+            |> send_resp(200, template(assigns))
+          end
+
+        "json" ->
+          result = Map.delete(Map.new(assigns), :conn)
+
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(200, Swoosh.json_library().encode!(result))
+
+        _ ->
+          assigns
+      end
     end
 
     defp handle_errors(conn, %{kind: _kind, reason: _reason, stack: _stack}) do
